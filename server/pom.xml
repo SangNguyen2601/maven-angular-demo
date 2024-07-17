@@ -29,6 +29,13 @@
 	<properties>
 		<java.version>17</java.version>
 	</properties>
+	<distributionManagement>
+    	<repository>
+        	<id>codeartifact</id>
+        	<name>codeartifact</name>
+        	<url>https://codeartifact-pipeline-domain-851725256542.d.codeartifact.eu-west-2.amazonaws.com/maven/codeartifact-pipeline-repo/"</url>
+    	</repository>
+    </distributionManagement>
 	<dependencies>
     	<dependency>
         	<groupId>org.springframework.boot</groupId>

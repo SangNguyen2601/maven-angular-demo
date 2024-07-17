@@ -1,0 +1,229 @@
+Description: Code Artifact CI/CD Pipeline
+
+Parameters:
+  GitRepoBranchName:
+    Type: String
+    Default: main
+
+Resources:
+
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+  
+  CodeArtifactDomain:
+    Type: AWS::CodeArtifact::Domain
+    Properties:
+      DomainName: !Sub "${AWS::StackName}-domain"
+  
+  CodeArtifactRepository:
+    Type: AWS::CodeArtifact::Repository
+    Properties:
+      DomainName: !GetAtt CodeArtifactDomain.Name
+      RepositoryName: !Sub "${AWS::StackName}-repo"
+
+  CodeRepository:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryDescription: Maven artifact code repository
+      RepositoryName: !Sub "${AWS::StackName}-maven-artifact-repo"
+  
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "${AWS::StackName}-CodeBuild"
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        EnvironmentVariables:
+          - Name: CODEARTIFACT_DOMAIN
+            Type: PLAINTEXT
+            Value: !GetAtt CodeArtifactDomain.Name
+          - Name: CODEARTIFACT_REPO
+            Type: PLAINTEXT
+            Value: !GetAtt CodeArtifactRepository.Name
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:3.0
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspec.yaml
+  
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      Stages:
+      - Name: Source
+        Actions:
+        - Name: SourceAction
+          ActionTypeId:
+            Category: Source
+            Owner: AWS
+            Version: '1'
+            Provider: CodeCommit
+          OutputArtifacts:
+          - Name: SourceBundle
+          Configuration:
+            BranchName: !Ref GitRepoBranchName
+            RepositoryName: !GetAtt CodeRepository.Name
+          RunOrder: '1'
+
+      - Name: BuildArtifact
+        Actions:
+        - Name: BuildServer
+          InputArtifacts:
+          - Name: SourceBundle
+          ActionTypeId:
+            Category: Build
+            Owner: AWS
+            Version: '1'
+            Provider: CodeBuild
+          Configuration:
+            ProjectName: !Ref CodeBuildProject
+            buildspecOverride: "server/buildspec.yaml"
+          RunOrder: '1'
+        - Name: BuildClient
+          InputArtifacts:
+          - Name: SourceBundle
+          ActionTypeId:
+            Category: Build
+            Owner: AWS
+            Version: '1'
+            Provider: CodeBuild
+          Configuration:
+            ProjectName: !Ref CodeBuildProject
+            buildspecOverride: "client/buildspec.yaml"
+          RunOrder: '1'
+
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Sid: ''
+          Effect: Allow
+          Principal:
+            Service:
+            - codebuild.amazonaws.com
+          Action: sts:AssumeRole
+      Policies:
+      - PolicyName: CodePipelinePolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Sid: CloudWatchLogsPolicy
+            Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource:
+            - "*"
+          - Sid: CodeCommitPolicy
+            Effect: Allow
+            Action:
+            - codecommit:GitPull
+            Resource:
+            - !GetAtt CodeRepository.Arn
+          - Sid: S3GetObjectPolicy
+            Effect: Allow
+            Action:
+            - s3:GetObject
+            - s3:GetObjectVersion
+            Resource:
+            - !Sub "arn:aws:s3:::${ArtifactBucket}/*"
+          - Sid: S3PutObjectPolicy
+            Effect: Allow
+            Action:
+            - s3:PutObject
+            Resource:
+            - !Sub "arn:aws:s3:::${ArtifactBucket}/*"
+          - Sid: BearerTokenPolicy
+            Effect: Allow
+            Action:
+            - sts:GetServiceBearerToken
+            Resource: "*"
+            Condition:
+              StringEquals:
+                sts:AWSServiceName: codeartifact.amazonaws.com
+          - Sid: CodeArtifactPolicy
+            Effect: Allow
+            Action:
+            - codeartifact:GetAuthorizationToken
+            Resource:
+            - !Sub "arn:aws:codeartifact:${AWS::Region}:${AWS::AccountId}:domain/${CodeArtifactDomain.Name}"
+          - Sid: CodeArtifactPackage
+            Effect: Allow
+            Action:
+            - codeartifact:PublishPackageVersion
+            - codeartifact:PutPackageMetadata
+            - codeartifact:ReadFromRepository
+            Resource:
+            - !Sub "arn:aws:codeartifact:${AWS::Region}:${AWS::AccountId}:package/${CodeArtifactDomain.Name}/${CodeArtifactRepository.Name}/*"
+          - Sid: CodeArtifactRepository
+            Effect: Allow
+            Action:
+            - codeartifact:ReadFromRepository
+            - codeartifact:GetRepositoryEndpoint
+            Resource:
+            - !Sub "arn:aws:codeartifact:${AWS::Region}:${AWS::AccountId}:repository/${CodeArtifactDomain.Name}/${CodeArtifactRepository.Name}"          
+
+  CodePipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Sid: ''
+          Effect: Allow
+          Principal:
+            Service:
+            - codepipeline.amazonaws.com
+          Action: sts:AssumeRole
+      Policies:
+      - PolicyName: CodePipelinePolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Action:
+            - s3:GetObject
+            - s3:GetObjectVersion
+            - s3:GetBucketVersioning
+            Resource: !Sub "arn:aws:s3:::${ArtifactBucket}/*"
+            Effect: Allow
+          - Action:
+            - s3:PutObject
+            Resource:
+            - !Sub "arn:aws:s3:::${ArtifactBucket}/*"
+            Effect: Allow
+          - Action:
+            - codecommit:GetBranch
+            - codecommit:GetCommit
+            - codecommit:UploadArchive
+            - codecommit:GetUploadArchiveStatus
+            - codecommit:CancelUploadArchive
+            Resource:
+              - !GetAtt CodeRepository.Arn
+            Effect: Allow
+          - Action:
+            - codebuild:StartBuild
+            - codebuild:BatchGetBuilds
+            Resource: 
+              - !GetAtt CodeBuildProject.Arn
+            Effect: Allow
+          - Action:
+            - iam:PassRole
+            Resource: "*"
+            Effect: Allow
+Outputs:
+  CodePipelineArtifactBucket:
+    Value: !Ref ArtifactBucket
+  CodeRepositoryHttpCloneUrl:
+    Value: !GetAtt CodeRepository.CloneUrlHttp
+  CodeRepositorySshCloneUrl:
+    Value: !GetAtt CodeRepository.CloneUrlSsh
